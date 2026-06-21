@@ -1,0 +1,165 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc
+
+
+# 1. DATA PREPROCESSING
+
+df = pd.read_csv("MiddleEast_dataset.csv")
+
+df = df.drop_duplicates()
+# Remove missing Emirate_Region
+df = df.dropna(subset=["Emirate"])
+df["Budget"] = df["Budget"].fillna(df["Budget"].median())
+df["Labor_Hours"] = df["Labor_Hours"].fillna(df["Labor_Hours"].median())
+
+# Convert Dates
+df["Start_Date"] = pd.to_datetime(df["Start_Date"], dayfirst=True)
+df["End_Date"] = pd.to_datetime(df["End_Date"], dayfirst=True)
+df["Actual_End_Date"] = pd.to_datetime(df["Actual_End_Date"], dayfirst=True)
+
+# Create Target Variable
+df['On_Time_Status'] = np.where(
+    df['Actual_End_Date'] > df['End_Date'],
+    1,
+    0
+)
+print("Target Variable Distribution:")
+print(df['On_Time_Status'].value_counts())
+print("-" * 50)
+
+# Planned Duration
+df['Planned_Duration'] = (df['End_Date'] - df['Start_Date']).dt.days
+df['Start_Month'] = df['Start_Date'].dt.month
+df['Start_DayOfWeek'] = df['Start_Date'].dt.dayofweek
+
+df = df.drop(columns=[
+    'Project_ID',
+    'Project_Name',
+    'Actual_End_Date',
+    'Task_Status',
+    'Cost',
+    'Cost_Variance',
+    'Start_Date',
+    'End_Date'
+])
+
+# Encoding text to numbers
+le_emirate = LabelEncoder()
+le_work = LabelEncoder()
+le_contractor = LabelEncoder()
+
+df['Emirate'] = le_emirate.fit_transform(df['Emirate'])
+df['Type_of_Work'] = le_work.fit_transform(df['Type_of_Work'])
+df['Contractor'] = le_contractor.fit_transform(df['Contractor'])
+
+X = df.drop('On_Time_Status', axis=1)
+y = df['On_Time_Status']
+
+# Split Data
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+
+# Logistic Regression, SVM, and ANN require feature scaling to converge properly.
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# 2. RANDOM FOREST (With GridSearch)
+
+param_grid = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [5, 10, 15],
+    'min_samples_split': [2, 5, 10],
+    'min_samples_leaf': [1, 2, 4]
+}
+
+grid = GridSearchCV(
+    estimator=RandomForestClassifier(random_state=42),
+    param_grid=param_grid,
+    cv=5,
+    scoring='accuracy',
+    n_jobs=-1
+)
+
+grid.fit(X_train, y_train)
+best_rf = grid.best_estimator_
+
+
+
+# 3. ADDING OTHER MODELS
+# Initialize models
+log_reg = LogisticRegression(random_state=42)
+dt_clf = DecisionTreeClassifier(random_state=42)
+svm_clf = SVC(probability=True, random_state=42) # probability=True needed for ROC curve
+ann_clf = MLPClassifier(
+    hidden_layer_sizes=(64, 32),
+    activation='relu',
+    solver='adam',
+    max_iter=1000,
+    random_state=42
+)
+
+# Fit models using scaled data for LR, SVM, and ANN
+log_reg.fit(X_train_scaled, y_train)
+dt_clf.fit(X_train, y_train)
+svm_clf.fit(X_train_scaled, y_train)
+ann_clf.fit(X_train_scaled, y_train)
+
+
+# 4. EVALUATION & COMPARISON
+models = {
+    'Tuned Random Forest': (best_rf, X_test),
+    'Logistic Regression': (log_reg, X_test_scaled),
+    'Decision Tree': (dt_clf, X_test),
+    'SVM Classifier': (svm_clf, X_test_scaled),
+    'ANN Classifier': (ann_clf, X_test_scaled)
+}
+
+plt.figure(figsize=(8, 6))
+
+print("## MODEL PERFORMANCE COMPARISON ##\n")
+
+for name, (model, X_data) in models.items():
+    # Predictions
+    y_pred = model.predict(X_data)
+    y_prob = model.predict_proba(X_data)[:, 1]
+
+    # Metrics
+    acc = accuracy_score(y_test, y_pred)
+    fpr, tpr, _ = roc_curve(y_test, y_prob)
+    roc_auc = auc(fpr, tpr)
+
+    # Print individual reports
+    print(f"=== {name} ===")
+    print(f"Accuracy: {acc:.4f}")
+    print(f"AUC Score: {roc_auc:.4f}")
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+    print("-" * 50)
+
+    # Plot combined ROC Curve
+    plt.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.3f})')
+
+# Finalize ROC Plot
+plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve Comparison')
+plt.legend()
+plt.show()
